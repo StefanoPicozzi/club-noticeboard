@@ -1,0 +1,27 @@
+# Runs the noticeboard with its notices in a named volume.
+# Secrets are files in ./secrets, made on the machine (see README.md).
+services:
+  noticeboard:
+    build: .
+    image: club-noticeboard:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NOTICEBOARD_PORT:-5000}:5000"
+    environment:
+      CLUB_NAME: ${CLUB_NAME:-Our club}
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      SECRET_KEY_FILE: /run/secrets/secret_key
+    secrets:
+      - admin_password
+      - secret_key
+    volumes:
+      - noticeboard-data:/app/data
+
+secrets:
+  admin_password:
+    file: ./secrets/admin_password
+  secret_key:
+    file: ./secrets/secret_key
+
+volumes:
+  noticeboard-data:

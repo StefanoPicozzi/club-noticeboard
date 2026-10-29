@@ -1,15 +1,38 @@
 """Club noticeboard: committee members post notices, everyone else reads them."""
+import hmac
 import os
+import secrets
 import sqlite3
 from datetime import datetime
 
-from flask import Flask, redirect, render_template_string, request, session, url_for
+from flask import Flask, abort, redirect, render_template_string, request, session, url_for
+
+
+def setting(name, default=None):
+    """Read a setting from NAME, or from the file NAME_FILE points at."""
+    path = os.environ.get(f"{name}_FILE")
+    if path:
+        with open(path) as f:
+            return f.read().strip()
+    return os.environ.get(name, default)
+
+
+ADMIN_PASSWORD = setting("ADMIN_PASSWORD")
+SECRET_KEY = setting("SECRET_KEY")
+for name, value in (("ADMIN_PASSWORD", ADMIN_PASSWORD), ("SECRET_KEY", SECRET_KEY)):
+    if not value:
+        raise SystemExit(f"{name} (or {name}_FILE) must be set; see README.md")
+
+DB = os.environ.get("DB_PATH", "/app/data/notices.db")
 
 app = Flask(__name__)
-app.secret_key = "dev-secret-change-me"
-
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
-DB = os.environ.get("DB_PATH", "/app/data/notices.db")
+app.secret_key = SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Served over HTTPS in production; set SESSION_COOKIE_SECURE=0 to try it on plain http://localhost.
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "1") != "0",
+)
 
 PAGE = """
 <!doctype html>
@@ -27,7 +50,7 @@ PAGE = """
     <h2>{{ n["title"] }}</h2>
     <p>{{ n["body"] }}</p>
     <small>{{ n["posted"] }}</small>
-    {% if admin %}<form method="post" action="/delete/{{ n['id'] }}"><button>Delete</button></form>{% endif %}
+    {% if admin %}<form method="post" action="/delete/{{ n['id'] }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Delete</button></form>{% endif %}
   </article>
 {% else %}
   <p>Nothing posted yet.</p>
@@ -35,6 +58,7 @@ PAGE = """
 {% if admin %}
   <h2>New notice</h2>
   <form method="post" action="/new">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
     <input name="title" placeholder="Title" required>
     <textarea name="body" placeholder="Details" rows="4"></textarea>
     <button>Post</button>
@@ -49,7 +73,8 @@ LOGIN = """
 <!doctype html><title>Committee login</title>
 <h1>Committee login</h1>
 {% if error %}<p style="color:#b00">{{ error }}</p>{% endif %}
-<form method="post"><input type="password" name="password" placeholder="Password" autofocus>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="password" name="password" placeholder="Password" autofocus>
 <button>Log in</button></form>
 """
 
@@ -62,11 +87,32 @@ def db():
     return con
 
 
+def csrf_token():
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_urlsafe(32)
+    return session["csrf"]
+
+
+@app.before_request
+def check_csrf():
+    if request.method == "POST":
+        sent = request.form.get("csrf", "")
+        if not session.get("csrf") or not hmac.compare_digest(sent, session["csrf"]):
+            abort(400)
+
+
+@app.route("/healthz")
+def healthz():
+    with db() as con:
+        con.execute("select 1")
+    return "ok"
+
+
 @app.route("/")
 def index():
     with db() as con:
         notices = con.execute("select * from notices order by id desc").fetchall()
-    return render_template_string(PAGE, notices=notices, admin=session.get("admin"),
+    return render_template_string(PAGE, notices=notices, admin=session.get("admin"), csrf=csrf_token(),
                                   club=os.environ.get("CLUB_NAME", "Our club"))
 
 
@@ -74,11 +120,12 @@ def index():
 def login():
     error = ""
     if request.method == "POST":
-        if request.form.get("password") == ADMIN_PASSWORD:
+        if hmac.compare_digest(request.form.get("password", "").encode(), ADMIN_PASSWORD.encode()):
+            session.clear()
             session["admin"] = True
             return redirect(url_for("index"))
         error = "Wrong password."
-    return render_template_string(LOGIN, error=error)
+    return render_template_string(LOGIN, error=error, csrf=csrf_token())
 
 
 @app.route("/logout")
