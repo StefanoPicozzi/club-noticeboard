@@ -1,4 +1,7 @@
 FROM python:3.12.16-slim
+LABEL org.opencontainers.image.source="https://github.com/StefanoPicozzi/club-noticeboard" \
+      org.opencontainers.image.description="A small noticeboard for a club or committee" \
+      org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
